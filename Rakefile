@@ -163,3 +163,86 @@ def deploy!
   puts 'Deploying to Heroku..'
   puts %x[git push heroku HEAD:master --force]
 end
+
+##
+# Parse and return only changed content files.
+#
+# @return [Array<String>] paths to changed files
+#
+def changed_files
+  log = %x[git log heroku/master..master --stat --pretty=oneline]
+  log.split($/).map {|line| (match = /\s+(content\/.*)\s+\|/.match(line)) && match[1]}.compact
+end
+
+##
+# Prepares tweets about the deployment, including a snippet from each updated HTML file.
+#
+# @array [Array<String>] files paths to updated files to tweet about
+#
+# @return [Array<String>] tweets to make after the deployment
+#
+def prepare_tweets_from_files(files)
+  tweets = []
+  files.each do |file|
+    # TODO: Multiple file extensions
+    filename = /\Acontent\/(.*)#{File.extname(file)}\Z/.match(file)[1]
+    next unless filename
+    filename = "#{filename}.html"
+    filepath = File.join('output', filename)
+    if File.exist?(filepath)
+      tweet = ''
+      length_remaining = 140
+      url = "#{BASE_URL}/#{filename}"
+      length_remaining -= url.size
+      metadata_block = false
+      metadata_lines = File.read(file).lines.select do |line|
+        if metadata_block
+          true
+        else
+          metadata_block = !metadata_block if line == '---'
+          false
+        end
+      end.join("\n")
+      if metadata = YAML.load(StringIO.new(metadata_lines))
+        title = "#{metadata['title']} - "
+        length_remaining -= title.size
+        tweet << title
+      end
+      if length_remaining > 3
+        doc = Nokogiri::HTML(File.read(filepath))
+        body = doc.css('body .content').last
+        snippet = body.text.strip.gsub("\n", '').squeeze(' ')
+        if snippet.size > length_remaining - 1 # 1 space afterward
+          snippet = "#{snippet[0...length_remaining-4].strip}..."
+        end
+        tweet << "#{snippet} "
+        # TODO: snippet in git notes optionally?
+      end
+      tweet << url
+      tweets << tweet
+    end
+  end
+  tweets
+end
+
+##
+# Tweets the given tweets using the configured credentials.
+#
+# @param [Array<String>] tweets strings to send to Twitter on behalf of the configured credentials.
+#
+def tweet(tweets)
+  Twitter.configure do |config|
+    config.consumer_key = TWITTER_CONSUMER_KEY
+    config.consumer_secret = TWITTER_CONSUMER_SECRET
+    config.oauth_token = TWITTER_OAUTH_TOKEN
+    config.oauth_token_secret = TWITTER_OAUTH_TOKEN_SECRET
+  end
+  tweets.each do |tweet|
+    # puts tweet # DEBUG
+    puts "Tweet: \"#{tweet}\"? (y/n)"
+    if $stdin.gets.chomp == 'y'
+      # TODO: Allow option to force yes
+      Twitter.update(tweet)
+    end
+  end
+end
